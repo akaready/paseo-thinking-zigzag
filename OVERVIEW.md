@@ -12,4 +12,4 @@ Plan approvals and spoken messages keep Paseo's own rendering. Tool output is tr
 
 If another plugin hides Thinking rows, such as Mono's "Hide Thinking in timeline" setting, turn that off. Otherwise thoughts are left out.
 
-Folding messages, grouping a turn into one line, its table of contents, and closing it by clicking outside work on desktop and web. In the phone and tablet apps, each thought and tool call gets its own line and every message stays in the chat; tap a line to open and close it. These behaviors depend on how Paseo's web chat lays out and scrolls its rows, so a later Paseo release could change them.
+Folding messages, grouping a turn into one line, its table of contents, and closing it by clicking outside work on desktop and web. In the phone and tablet apps, every message stays in the chat, so each stretch of work between messages gets its own line, and Paseo still leaves a small gap for every thought and tool call in it; tap a line to open and close it. These behaviors depend on how Paseo's web chat lays out and scrolls its rows, so a later Paseo release could change them.

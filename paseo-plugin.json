@@ -1,5 +1,5 @@
 {
-  "id": "thinkingzigzag",
+  "id": "thinking-zigzag",
   "name": "Thinking Zigzag",
   "description": "Folds each agent turn's thinking, tool calls and interim messages into one expandable summary line",
   "requirements": {

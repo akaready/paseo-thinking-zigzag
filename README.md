@@ -21,10 +21,10 @@ Enjoy! 🙏
 Plugins run trusted, unsandboxed code, so turn them on first under **Settings → Plugins → Enable plugins**. Then:
 
 ```bash
-paseo plugin install github:akaready/paseo-thinkingzigzag
+paseo plugin install github:akaready/paseo-thinking-zigzag
 ```
 
-Update it later with `paseo plugin update thinkingzigzag`. Requires Paseo 0.11.2 or later.
+Update it later with `paseo plugin update thinking-zigzag`. Requires Paseo 0.11.2 or later.
 
 &nbsp;
 
@@ -42,6 +42,6 @@ Update it later with `paseo plugin update thinkingzigzag`. Requires Paseo 0.11.2
 
 - If another plugin hides Thinking rows, such as Mono's "Hide Thinking in timeline" setting, turn that off, or thoughts are left out.
 - Opening a chat reads the agent's timeline once from your Paseo host, so earlier messages fold before they appear.
-- Folding, the one-line summary, and closing by clicking outside work on desktop and the web app, including Safari on iPad. In Paseo's phone and tablet apps, each thought and tool call gets its own line and messages don't fold.
+- Folding, the one-line summary per turn, and closing by clicking outside work on desktop and the web app, including Safari on iPad. In Paseo's phone and tablet apps, messages stay in the chat, so each stretch of work between them gets its own line, and Paseo still leaves a small gap for every thought and tool call in it.
 - Plan approvals and spoken messages keep Paseo's own rendering. Tool output is trimmed to 40 lines, and messages in an opened turn show as plain text.
 - It works by reading and restyling Paseo's web chat, so a later Paseo release could change how it behaves.

@@ -11,7 +11,7 @@ import {
 import { useQuery } from "@tanstack/react-query";
 import { Animated, Easing, Platform, Pressable, Text, View } from "react-native";
 import { CATEGORIES, type ItemData } from "./items";
-import { fetchSupersededMessages, fetchTurn } from "./turn";
+import { fetchSupersededMessages, fetchTurn, stretchOf, useAgentTimeline } from "./turn";
 import {
   ITEM_ROW_TEST_ID,
   foldMessages,
@@ -34,7 +34,9 @@ const CLEARANCE = 30;
 const clamp = (margin: number) => Math.max(-64, Math.min(64, margin));
 const EASE_OPEN = Easing.bezier(0.2, 0, 0, 1);
 const EASE_CLOSE = Easing.bezier(0.3, 0, 1, 1);
-const useNativeDriver = Platform.OS !== "web";
+/** Paseo's phone and tablet apps, where a row cannot see the page around it. */
+const NATIVE = Platform.OS !== "web";
+const useNativeDriver = NATIVE;
 const MONOSPACE = Platform.select({
   web: "ui-monospace, SFMono-Regular, Menlo, monospace",
   ios: "Menlo",
@@ -127,11 +129,28 @@ function sectionize(steps: Step<ItemData>[]) {
 
 type Styles = ReturnType<typeof createStyles>;
 
+/**
+ * Off the web: the row's stretch of items, read from the agent's timeline. Its first row draws it.
+ * A row not found in a timeline read since it mounted draws itself, as each row once did.
+ */
+function nativeSteps(
+  timeline: ReturnType<typeof useAgentTimeline>,
+  data: ItemData,
+  at: number,
+  mountedAt: number,
+): Step<ItemData>[] {
+  if (!timeline?.readAt) return [];
+  const stretch = stretchOf(timeline.entries, data, at);
+  if (stretch) return stretch.leads ? stretch.items.map((item) => ({ item })) : [];
+  return timeline.readAt > mountedAt ? [{ item: data }] : [];
+}
+
 // Every thought and tool call is its own timeline row. Rows stay empty and take no space, except
-// the last row of each turn, which draws the whole turn as one line.
-export function ItemRow({ agentId, item, theme, layout }: PluginTimelineItemProps<ItemData>) {
+// the first row of each turn, which draws the whole turn as one line. Off the web, where messages
+// stay in the chat, the first row of each stretch between messages draws that stretch.
+export function ItemRow({ agentId, item, timestamp, theme, layout }: PluginTimelineItemProps<ItemData>) {
   const rowRef = useRef<View>(null);
-  // undefined until measured; null off the web, where each row is its own run.
+  // undefined until measured; null off the web.
   const [run, setRun] = useState<Run<ItemData> | null>();
   const runKey = useRef("");
   const dataKey = JSON.stringify(item.data);
@@ -139,11 +158,13 @@ export function ItemRow({ agentId, item, theme, layout }: PluginTimelineItemProp
   // does not show each one and then collapse it. Read once per agent.
   const paseo = usePaseo();
   const superseded = useQuery({
-    queryKey: ["thinkingzigzag", "superseded", agentId],
+    queryKey: ["thinking-zigzag", "superseded", agentId],
     queryFn: () => fetchSupersededMessages(paseo, agentId),
-    enabled: Platform.OS === "web",
+    enabled: !NATIVE,
     staleTime: Infinity,
   });
+  const timeline = useAgentTimeline(paseo, agentId, NATIVE);
+  const mountedAt = useRef(Date.now());
   useEffect(() => {
     if (superseded.data) foldMessages(superseded.data);
   }, [superseded.data]);
@@ -161,7 +182,11 @@ export function ItemRow({ agentId, item, theme, layout }: PluginTimelineItemProp
     [],
   );
 
-  const steps = run === null ? [{ item: item.data }] : run?.leads ? run.steps : [];
+  const steps = NATIVE
+    ? nativeSteps(timeline, item.data, timestamp.getTime(), mountedAt.current)
+    : run?.leads
+      ? run.steps
+      : [];
   return (
     <View ref={rowRef} testID={ITEM_ROW_TEST_ID}>
       {steps.some((step) => "item" in step) ? (
@@ -198,7 +223,7 @@ function RunLine({
   const paseo = usePaseo();
   const anchor = loaded.flatMap((step) => ("item" in step ? [step.item] : [])).at(-1)!;
   const fetched = useQuery({
-    queryKey: ["thinkingzigzag", "turn", agentId, anchor.kind, anchor.callId || anchor.body],
+    queryKey: ["thinking-zigzag", "turn", agentId, anchor.kind, anchor.callId || anchor.body],
     queryFn: () => fetchTurn(paseo, agentId, anchor),
     enabled: loadedPartial,
     staleTime: Infinity,

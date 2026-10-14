@@ -53,7 +53,7 @@ const isWeb = Platform.OS === "web";
 const CHAT_SCROLLER = '[data-testid="agent-chat-scroll"]';
 
 /** Test ID on every item row, so rows can find the other rows of their turn. */
-export const ITEM_ROW_TEST_ID = "thinkingzigzag-item";
+export const ITEM_ROW_TEST_ID = "thinking-zigzag-item";
 
 // Each item is its own timeline row, and a row cannot see its neighbors. So every row
 // publishes its data here, and the row that draws a turn's line gathers the rest from the page.
@@ -85,7 +85,7 @@ const USER_MESSAGE_TEST_ID = "user-message";
 const AGENT_MESSAGE_TEST_ID = "assistant-message";
 const ROW_ID = "data-history-row-id";
 const MESSAGE_ID = "data-message-id";
-const OPEN_ATTRIBUTE = "data-thinkingzigzag-open";
+const OPEN_ATTRIBUTE = "data-thinking-zigzag-open";
 
 function isItemRow(element: DomElement) {
   return element.getAttribute("data-testid") === ITEM_ROW_TEST_ID;

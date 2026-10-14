@@ -1,12 +1,12 @@
 {
-  "name": "thinkingzigzag",
+  "name": "thinking-zigzag",
   "private": true,
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Folds each agent turn's thinking, tool calls and interim messages into one expandable summary line in Paseo's chat",
   "license": "SEE LICENSE IN LICENSE",
   "repository": {
     "type": "git",
-    "url": "https://github.com/akaready/paseo-thinkingzigzag"
+    "url": "https://github.com/akaready/paseo-thinking-zigzag"
   },
   "files": [
     "paseo-plugin.json",
