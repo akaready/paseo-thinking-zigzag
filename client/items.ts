@@ -17,6 +17,14 @@ export const itemSchema = z.object({
   body: z.string(),
   phase: z.enum(["streaming", "complete"]),
   failed: z.boolean(),
+  /** File the step touched, when it names one. Empty for thoughts and commands. */
+  path: z.string(),
+  /** Unified diff for an edit; empty otherwise. */
+  diff: z.string(),
+  /** Whether the step captures or opens an image, which agents use for screenshots. */
+  screenshot: z.boolean(),
+  /** When the step's row was created, in ms. Filled at render time, not by the transformer. */
+  at: z.number().optional(),
 });
 
 export type ItemData = z.output<typeof itemSchema>;
@@ -30,7 +38,7 @@ const MAX_BODY_LINES = 40;
 const MAX_BODY_CHARS = 4000;
 
 function timelineItem(data: ItemData): PluginTimelineTransformResult {
-  return { items: [{ type: "plugin", kind: ITEM_KIND, version: 1, data }] };
+  return { items: [{ type: "plugin", kind: ITEM_KIND, version: 2, data }] };
 }
 
 /** Keeps the start of long text, or its end for logs, where the latest output matters. */
@@ -120,6 +128,20 @@ function errorText(error: unknown): string {
 }
 
 /** A finished thought with no text has nothing to reveal, so it is left out. */
+const IMAGE_FILE = /\.(png|jpe?g|gif|webp)\b/i;
+const IMAGE_TOKEN = /[^\s'"`]+\.(png|jpe?g|gif|webp)\b/i;
+const CAPTURE = /\bscreencapture\b|\.screenshot\(|\bshot\.(m?js|ts|py)\b/i;
+
+/**
+ * A tool call that opens an image or captures the screen. Shell commands count only when they
+ * name an image file or run a capture, not when they merely search for the word.
+ */
+function isScreenshot(call: ToolCall, path: string): boolean {
+  if (IMAGE_FILE.test(path) || /screenshot/i.test(call.name)) return true;
+  const detail = call.detail;
+  return detail.type === "shell" && (IMAGE_FILE.test(detail.command) || CAPTURE.test(detail.command));
+}
+
 export function thoughtData(text: string, phase: Phase): ItemData | null {
   if (phase === "complete" && !text.trim()) return null;
   return {
@@ -130,6 +152,9 @@ export function thoughtData(text: string, phase: Phase): ItemData | null {
     body: text,
     phase,
     failed: false,
+    path: "",
+    diff: "",
+    screenshot: false,
   };
 }
 
@@ -139,6 +164,12 @@ export function toolData(call: ToolCall, phase: Phase): ItemData | null {
   const { title, body } = describe(call);
   const failed = call.status === "failed";
   const error = failed ? errorText(call.error) : "";
+  const detail = call.detail;
+  const named = "filePath" in detail && typeof detail.filePath === "string" ? detail.filePath : "";
+  // A shell capture names its image in the command, which is where the panel finds it.
+  const path =
+    named || (detail.type === "shell" ? (IMAGE_TOKEN.exec(detail.command)?.[0] ?? "") : "");
+  const diff = detail.type === "edit" ? (detail.unifiedDiff ?? detail.newString ?? "") : "";
   return {
     kind: "tool",
     category: categorize(call),
@@ -147,6 +178,9 @@ export function toolData(call: ToolCall, phase: Phase): ItemData | null {
     body: [body, error].filter(Boolean).join("\n\n"),
     phase,
     failed,
+    path,
+    diff,
+    screenshot: isScreenshot(call, path),
   };
 }
 

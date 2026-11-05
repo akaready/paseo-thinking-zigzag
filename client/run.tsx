@@ -1,8 +1,10 @@
 import type { PluginTheme } from "@getpaseo/plugin";
 import { usePaseo, type PluginTimelineItemProps } from "@getpaseo/plugin/client";
-import { Icon, useRevealedText } from "@getpaseo/plugin/client/react-native";
+
 import {
+  Fragment,
   useEffect,
+  useId,
   useMemo,
   useRef,
   useState,
@@ -10,15 +12,23 @@ import {
 } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Animated, Easing, Platform, Pressable, Text, View } from "react-native";
-import { CATEGORIES, type ItemData } from "./items";
+import type { ItemData } from "./items";
 import { fetchSupersededMessages, fetchTurn, stretchOf, useAgentTimeline } from "./turn";
+import {
+  Panel,
+  summaryPartColor,
+  summaryParts,
+  usePrefs,
+  type Category,
+  type FocusRequest,
+  type Section,
+} from "./panel";
 import {
   ITEM_ROW_TEST_ID,
   foldMessages,
   holdChatScroll,
   markRunOpen,
   measureClearance,
-  onPressOutside,
   publishItem,
   trackRun,
   watchLayout,
@@ -31,7 +41,7 @@ const CLOSE_MS = 200;
 /** Distance from the middle of a closed line to the content shown above it and below it. */
 const CLEARANCE = 30;
 /** The furthest a line's margins move, which bounds any misreading of the layout. */
-const clamp = (margin: number) => Math.max(-64, Math.min(64, margin));
+const clamp = (margin: number) => Math.max(0, Math.min(64, margin));
 const EASE_OPEN = Easing.bezier(0.2, 0, 0, 1);
 const EASE_CLOSE = Easing.bezier(0.3, 0, 1, 1);
 /** Paseo's phone and tablet apps, where a row cannot see the page around it. */
@@ -47,39 +57,6 @@ const MONOSPACE = Platform.select({
 const PEAK = 6;
 const PEAK_STEP = PEAK * Math.SQRT2;
 const ZIGZAG_HEIGHT = PEAK_STEP / 2 + 2;
-
-const NOUNS: Record<ItemData["category"], [string, string]> = {
-  thought: ["thought", "thoughts"],
-  command: ["command", "commands"],
-  edit: ["edit", "edits"],
-  read: ["read", "reads"],
-  search: ["search", "searches"],
-  agent: ["subagent", "subagents"],
-  tool: ["tool call", "tool calls"],
-};
-
-/** Counts get a "+" when the turn starts above what is loaded. */
-function summarize(items: ItemData[], partial: boolean, messages = 0) {
-  const counts = new Map<ItemData["category"], number>();
-  for (const item of items) counts.set(item.category, (counts.get(item.category) ?? 0) + 1);
-  const count = (n: number, [one, many]: [string, string]) =>
-    `${n}${partial ? "+" : ""} ${n === 1 && !partial ? one : many}`;
-  return [
-    ...(messages ? [count(messages, ["message", "messages"])] : []),
-    ...CATEGORIES.flatMap((category) => {
-      const n = counts.get(category);
-      return n ? [count(n, NOUNS[category])] : [];
-    }),
-  ].join(" · ");
-}
-
-/** A stretch of work and the agent message that announced it. */
-interface Section {
-  heading: string;
-  /** The announcing message, when it folded out of the chat; empty when it is still shown. */
-  message: string;
-  items: ItemData[];
-}
 
 // Agents usually end a message by saying what they will do next, so the last sentence of the
 // message before a stretch of work names it best.
@@ -154,6 +131,7 @@ export function ItemRow({ agentId, item, timestamp, theme, layout }: PluginTimel
   const [run, setRun] = useState<Run<ItemData> | null>();
   const runKey = useRef("");
   const dataKey = JSON.stringify(item.data);
+  const at = timestamp.getTime();
   // Messages that later ones supersede fold before Paseo shows them, so scrolling through history
   // does not show each one and then collapse it. Read once per agent.
   const paseo = usePaseo();
@@ -170,7 +148,7 @@ export function ItemRow({ agentId, item, timestamp, theme, layout }: PluginTimel
   }, [superseded.data]);
 
   // dataKey stands in for item.data, which is a fresh object on every render.
-  useEffect(() => publishItem(rowRef.current, item.data), [dataKey]);
+  useEffect(() => publishItem(rowRef.current, { ...item.data, at }), [dataKey, at]);
   useEffect(
     () =>
       trackRun<ItemData>(rowRef.current, (next) => {
@@ -219,6 +197,8 @@ function RunLine({
   compact: boolean;
 }) {
   const styles = useMemo(() => createStyles(theme, compact), [theme, compact]);
+  const prefs = usePrefs();
+  const partId = useId().replace(/[^a-zA-Z0-9_-]/g, "");
   // A turn that starts above what the chat has loaded is read whole from the agent's timeline.
   const paseo = usePaseo();
   const anchor = loaded.flatMap((step) => ("item" in step ? [step.item] : [])).at(-1)!;
@@ -233,11 +213,16 @@ function RunLine({
   const partial = loadedPartial && !whole;
   const items = steps.flatMap((step) => ("item" in step ? [step.item] : []));
   const sections = sectionize(steps);
-  const summary = summarize(items, partial, sections.filter((section) => section.message).length);
+  const parts = summaryParts(sections);
   const failed = items.filter((item) => item.failed).length;
   const running = items.some((item) => item.phase === "streaming");
+  const summary = parts.map((part) => part.text).join(" · ") + (failed ? " · " + failed + " failed" : "");
   const [hovered, setHovered] = useState(false);
   const [open, setOpen] = useState(false);
+  // Opened from the screenshot count: the panel shows only the turn's thumbnails.
+  const [shotsOnly, setShotsOnly] = useState(false);
+  const [settled, setSettled] = useState(false);
+  const [focusRequest, setFocusRequest] = useState<FocusRequest | null>(null);
   // The panel stays mounted until its close animation ends.
   const [mounted, setMounted] = useState(false);
   const [panelHeight, setPanelHeight] = useState(0);
@@ -270,11 +255,7 @@ function RunLine({
     if (!open) return;
     const row = rowRef.current;
     const release = holdChatScroll(row);
-    const unsubscribe = onPressOutside(row, () => setOpen(false));
-    return () => {
-      unsubscribe();
-      release(CLOSE_MS);
-    };
+    return () => release(CLOSE_MS);
   }, [open, rowRef]);
 
   useEffect(() => {
@@ -306,6 +287,7 @@ function RunLine({
   // Opening mounts the panel and waits for its measured height before moving anything, and
   // any later change in that height, from a section or tool output opening, animates too.
   useEffect(() => {
+    if (!open) setSettled(false);
     if (open) {
       setMounted(true);
       if (!panelHeight) return;
@@ -314,7 +296,7 @@ function RunLine({
     const timing = (value: Animated.Value, toValue: number) =>
       Animated.timing(value, {
         toValue,
-        duration: open ? OPEN_MS : CLOSE_MS,
+        duration: open ? (settled ? 160 : OPEN_MS) : CLOSE_MS,
         easing: open ? EASE_OPEN : EASE_CLOSE,
         useNativeDriver: false,
       });
@@ -323,9 +305,13 @@ function RunLine({
       timing(reveal, target),
     ]);
     animation.start(({ finished }) => {
-      if (finished && !open) {
+      if (!finished) return;
+      if (open) setSettled(true);
+      else {
         setMounted(false);
         setPanelHeight(0);
+        setFocusRequest(null);
+        setShotsOnly(false);
       }
     });
     return () => animation.stop();
@@ -342,7 +328,10 @@ function RunLine({
         accessibilityRole="button"
         accessibilityLabel={failed ? `${summary}, ${failed} failed` : summary}
         accessibilityState={{ expanded: open }}
-        onPress={() => setOpen((value) => !value)}
+        onPress={() => {
+          if (!open) setShotsOnly(false);
+          setOpen(!open);
+        }}
         onHoverIn={() => setHovered(true)}
         onHoverOut={() => setHovered(false)}
         style={styles.line}
@@ -350,31 +339,60 @@ function RunLine({
         <Zigzag color={zigzagColor} fromLabel="right" />
         <Animated.View style={[styles.label, lit ? styles.labelLit : null, { opacity: pulse }]}>
           <Text numberOfLines={1} style={styles.labelText}>
-            {summary}
+            {parts.map((part, index) => (
+              <Fragment key={part.kind}>
+                {index > 0 ? <Text>{" · "}</Text> : null}
+                <Text
+                  nativeID={"zigzag-part-" + partId + "-" + part.kind}
+                  onPress={(event) => {
+                    (event as unknown as { stopPropagation?: () => void }).stopPropagation?.();
+                    if (part.kind === "screenshot") {
+                      // The count toggles the thumbnails alone; from the full panel it narrows to them.
+                      if (open && shotsOnly) return setOpen(false);
+                      setShotsOnly(true);
+                      setOpen(true);
+                      return;
+                    }
+                    setShotsOnly(false);
+                    setOpen(true);
+                    setFocusRequest({ kind: part.kind, id: Date.now() + index + Math.random() });
+                  }}
+                  style={{ color: summaryPartColor(prefs, part.kind, theme.colors.foregroundMuted) }}
+                >
+                  {part.text}
+                </Text>
+              </Fragment>
+            ))}
             {failed ? <Text style={styles.failed}>{` · ${failed} failed`}</Text> : null}
           </Text>
         </Animated.View>
         <Zigzag color={zigzagColor} fromLabel="left" />
       </Pressable>
-      <Animated.View style={[styles.reveal, { height, opacity: reveal }]}>
+      <Animated.View
+        style={[
+          styles.reveal,
+          { height, opacity: reveal, overflow: open && settled ? "visible" : "hidden" },
+        ]}
+      >
         {mounted ? (
           <Animated.View
             style={[styles.measure, { transform: [{ translateY: slide }] }]}
             onLayout={(event) => setPanelHeight(event.nativeEvent.layout.height)}
           >
-            <View style={[styles.panel, sections.length > 1 ? styles.contents : null]}>
-              {partial ? (
+            <View style={styles.panel}>
+              {partial && !shotsOnly ? (
                 <Text style={styles.note}>
                   This turn starts above what is loaded. Scroll up to include its earlier steps.
                 </Text>
               ) : null}
-              {sections.length === 1 ? (
-                <SectionBody section={sections[0]!} styles={styles} theme={theme} />
-              ) : (
-                sections.map((section, index) => (
-                  <SectionRow key={index} section={section} styles={styles} theme={theme} />
-                ))
-              )}
+              <Panel
+                agentId={agentId}
+                sections={sections}
+                theme={theme}
+                compact={compact}
+                focusRequest={focusRequest}
+                shotsOnly={shotsOnly}
+              />
             </View>
           </Animated.View>
         ) : null}
@@ -398,123 +416,6 @@ function Zigzag({ color, fromLabel }: { color: string; fromLabel: "left" | "righ
           ]}
         />
       ))}
-    </View>
-  );
-}
-
-// Collapsed sections read as the turn's table of contents; open one to see its steps.
-function SectionRow({
-  section,
-  styles,
-  theme,
-}: {
-  section: Section;
-  styles: Styles;
-  theme: PluginTheme;
-}) {
-  const [open, setOpen] = useState(false);
-  const [hovered, setHovered] = useState(false);
-  const failed = section.items.filter((item) => item.failed).length;
-  return (
-    <View>
-      <Pressable
-        accessibilityRole="button"
-        accessibilityState={{ expanded: open }}
-        onPress={() => setOpen((value) => !value)}
-        onHoverIn={() => setHovered(true)}
-        onHoverOut={() => setHovered(false)}
-        style={[styles.sectionHeader, hovered ? styles.sectionHeaderLit : null]}
-      >
-        <Icon
-          name={open ? "ChevronDown" : "ChevronRight"}
-          size={14}
-          color={theme.colors.foregroundMuted}
-        />
-        <Text numberOfLines={1} style={styles.sectionTitle}>
-          {section.heading || "Before the first reply"}
-        </Text>
-        <Text numberOfLines={1} style={styles.sectionCounts}>
-          {summarize(section.items, false)}
-          {failed ? <Text style={styles.failed}>{` · ${failed} failed`}</Text> : null}
-        </Text>
-      </Pressable>
-      {open ? (
-        <View style={styles.sectionItems}>
-          <SectionBody section={section} styles={styles} theme={theme} />
-        </View>
-      ) : null}
-    </View>
-  );
-}
-
-function SectionBody({
-  section,
-  styles,
-  theme,
-}: {
-  section: Section;
-  styles: Styles;
-  theme: PluginTheme;
-}) {
-  return (
-    <>
-      {section.message ? (
-        <Text selectable style={styles.message}>
-          {section.message}
-        </Text>
-      ) : null}
-      <Items items={section.items} styles={styles} theme={theme} />
-    </>
-  );
-}
-
-function Items({ items, styles, theme }: { items: ItemData[]; styles: Styles; theme: PluginTheme }) {
-  return (
-    <>
-      {items.map((item, index) =>
-        item.kind === "thought" ? (
-          <Thought key={index} item={item} styles={styles} />
-        ) : (
-          <Tool key={index} item={item} styles={styles} theme={theme} />
-        ),
-      )}
-    </>
-  );
-}
-
-function Thought({ item, styles }: { item: ItemData; styles: Styles }) {
-  const text = useRevealedText(item.body, item.phase).trim();
-  return text ? (
-    <Text selectable style={styles.thought}>
-      {text}
-    </Text>
-  ) : null;
-}
-
-function Tool({ item, styles, theme }: { item: ItemData; styles: Styles; theme: PluginTheme }) {
-  const [open, setOpen] = useState(false);
-  const color = item.failed ? theme.colors.statusDanger : theme.colors.foreground;
-  return (
-    <View style={styles.tool}>
-      <Pressable
-        accessibilityRole="button"
-        accessibilityState={{ expanded: open }}
-        disabled={!item.body}
-        onPress={() => setOpen((value) => !value)}
-        style={styles.toolHeader}
-      >
-        <View style={item.body ? null : styles.hidden}>
-          <Icon name={open ? "ChevronDown" : "ChevronRight"} size={14} color={color} />
-        </View>
-        <Text selectable numberOfLines={open ? undefined : 1} style={[styles.toolTitle, { color }]}>
-          {item.title}
-        </Text>
-      </Pressable>
-      {open ? (
-        <Text selectable style={styles.toolBody}>
-          {item.body}
-        </Text>
-      ) : null}
     </View>
   );
 }

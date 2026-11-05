@@ -2,6 +2,8 @@
 
 Folds everything a coding agent does in a turn, its thinking, tool calls, and in-between messages, into one quiet line in Paseo's chat, so each turn reads as your message, a summary line, and the agent's latest reply.
 
+<img src="media/turn-open.png" alt="An opened turn under its zig-zag summary line" width="720">
+
 Plugins are made with 🤍 for the Paseo community. Free to use, fork, and hack on for <a href="LICENSE" target="_blank" rel="noopener noreferrer">non-commercial use</a>.
 
 Plug-ins take effort, hours, and credits to build. If you find them helpful for you and your workflows, a star ⭐ on the repo, a <a href="https://buymeacoffee.com/akaready" target="_blank" rel="noopener noreferrer">coffee</a> ☕, and a link back to <a href="https://akaready.com" target="_blank" rel="noopener noreferrer">@akaready</a> 🔗 all go a long way. Optional of course, but always appreciated.
@@ -34,6 +36,8 @@ Update it later with `paseo plugin update thinking-zigzag`. Requires Paseo 0.11.
 - **Folds the in-between.** Thinking, tool calls, and every message before the agent's latest one fold into the line. Only the latest reply stays in the chat.
 - **Opens in place.** Click the line and the turn slides open below it. It starts as a table of contents: one section per stretch of work, titled with the sentence the agent used to announce it, with its own counts. Open a section to read the agent's message in full, followed by its thoughts and tool calls; open a tool call to see its output, diff, or log.
 - **Holds the view.** While a turn is open, the chat stops following new output so the view stays put while the agent keeps working, and follows again when you close it. Click anywhere outside the open turn to close it.
+- **Jumps to the work.** Click a count in the line, such as `3 edits`, to open the turn at those steps. Switch between the timeline and a view grouped by type, show step durations, and pick a colour for each type of step.
+- **Shows screenshots.** When the agent took screenshots, click their count to open only a row of thumbnails; click one to see it full size over the chat, and step through them with the arrows or arrow keys.
 - **Shows status.** The summary pulses while the agent is still working, and counts failed tool calls in red.
 
 &nbsp;

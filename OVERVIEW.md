@@ -4,6 +4,10 @@ The line is a zig-zag from both edges that meets a summary in the middle, such a
 
 An opened turn starts as a table of contents. Each section is a stretch of work, titled with the sentence the agent used to announce it, with its own counts. Click a section to read the agent's message in full, followed by its thoughts and tool calls. Each tool call reads as one line, such as the command it ran or the file it edited; click it to show its output, diff, or log.
 
+Click a count in the line, such as `3 edits`, to open the turn at those steps. The opened turn's toolbar switches between the timeline and a view grouped by type, shows how long each step took, and sets a colour for each type of step.
+
+When the agent took screenshots, the line counts them too. Click that count to open only a row of thumbnails, and click a thumbnail to see it full size over the chat; the arrows under it or the arrow keys step through them, and Escape or the close button closes it. The full screenshot view works on desktop and web.
+
 While a turn is open on desktop or web, the chat stops following new output, so the view stays put while the agent keeps working. Closing it follows the latest output again, unless you scrolled away in the meantime.
 
 Opening a chat reads the agent's timeline once from your Paseo host, so earlier messages fold before they are shown rather than appearing and then collapsing as you scroll. A turn that starts above what the chat has loaded is read from the timeline too, so its counts and sections stay complete.

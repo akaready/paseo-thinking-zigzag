@@ -2,6 +2,8 @@ import { Platform } from "react-native";
 
 // This plugin typechecks without the DOM library. Declare only what this module uses.
 interface Box {
+  readonly left: number;
+  readonly width: number;
   readonly top: number;
   readonly bottom: number;
   readonly height: number;
@@ -41,16 +43,33 @@ declare const document: {
 declare class WheelEvent {
   constructor(type: "wheel", init: { deltaY: number });
 }
+declare const localStorage: {
+  getItem(key: string): string | null;
+  setItem(key: string, value: string): void;
+};
 declare class ResizeObserver {
   constructor(callback: () => void);
   observe(target: DomElement): void;
   disconnect(): void;
 }
 declare function requestAnimationFrame(callback: () => void): number;
+declare const window: {
+  addEventListener(type: "keydown", listener: (event: { key: string; preventDefault(): void }) => void): void;
+  removeEventListener(type: "keydown", listener: (event: { key: string; preventDefault(): void }) => void): void;
+};
 declare function getComputedStyle(element: DomElement): { backgroundColor: string };
 
 const isWeb = Platform.OS === "web";
 const CHAT_SCROLLER = '[data-testid="agent-chat-scroll"]';
+
+/** The horizontal span of the chat holding this node, so overlays leave Paseo's sidebars clear. */
+export function chatColumn(node: unknown): { left: number; width: number } | null {
+  if (!isWeb || !node) return null;
+  const scroller = (node as DomElement).closest(CHAT_SCROLLER);
+  if (!scroller) return null;
+  const { left, width } = scroller.getBoundingClientRect();
+  return { left, width };
+}
 
 /** Test ID on every item row, so rows can find the other rows of their turn. */
 export const ITEM_ROW_TEST_ID = "thinking-zigzag-item";
@@ -98,7 +117,11 @@ interface Prose {
   rowId: string | null;
 }
 
-type Found = DomElement | "user" | Prose;
+interface UserMark {
+  user: DomElement;
+}
+type Found = DomElement | UserMark | Prose;
+type NonUser = Exclude<Found, UserMark>;
 
 // A folded message is hidden, and hidden text loses its line breaks, so a block's text is kept
 // from when it was last shown.
@@ -120,7 +143,7 @@ function readProse(element: DomElement): Prose {
 function scan(element: DomElement, reverse: boolean, visit: (found: Found) => boolean): boolean {
   if (isItemRow(element)) return visit(element);
   const testId = element.getAttribute("data-testid");
-  if (testId === USER_MESSAGE_TEST_ID) return visit("user");
+  if (testId === USER_MESSAGE_TEST_ID) return visit({ user: element });
   if (testId === AGENT_MESSAGE_TEST_ID) return visit(readProse(element));
   const children = element.children;
   for (let step = 0; step < children.length; step += 1) {
@@ -245,6 +268,11 @@ export function markRunOpen(node: unknown, open: boolean) {
  */
 export type Step<T> = { prose: string; shown: boolean } | { item: T };
 
+// The row that draws a turn's line, keyed by the user message that starts the turn. A turn above
+// the first user message has no key, so its leader is kept separately.
+const leadersByUser = new WeakMap<DomElement, DomElement>();
+let leaderAtTop: DomElement | null = null;
+
 /** One turn: everything between two of the user's messages. */
 export interface Run<T> {
   /** Whether this row draws the turn's line. */
@@ -268,16 +296,25 @@ export function trackRun<T>(node: unknown, onChange: (run: Run<T> | null) => voi
     onChange(null);
     return () => {};
   }
-  const collect = (found: Exclude<Found, "user">[]) => (next: Found) => {
-    if (next === "user") return false;
-    found.push(next);
-    return true;
-  };
   const measure = () => {
-    const before: Exclude<Found, "user">[] = [];
-    const after: Exclude<Found, "user">[] = [];
-    const start = walk(row, scroller, false, collect(before));
-    walk(row, scroller, true, collect(after));
+    const before: NonUser[] = [];
+    const after: NonUser[] = [];
+    let boundary: DomElement | null = null;
+    const collectBefore = (next: Found) => {
+      if ("user" in next) {
+        boundary = next.user;
+        return false;
+      }
+      before.push(next);
+      return true;
+    };
+    const collectAfter = (next: Found) => {
+      if ("user" in next) return false;
+      after.push(next);
+      return true;
+    };
+    const start = walk(row, scroller, false, collectBefore);
+    walk(row, scroller, true, collectAfter);
     const turn = [...before.reverse(), row, ...after];
 
     // Every message before the last one this row can see has a later one, so it folds. The last
@@ -289,11 +326,20 @@ export function trackRun<T>(node: unknown, onChange: (run: Run<T> | null) => voi
     for (const block of earlier) if (block.rowId && block.text) foldedText.set(block.rowId, block.text);
     fold(earlier.map((block) => block.messageId!));
 
-    // The line belongs to the turn's first row, which is only known once the turn's start is
-    // mounted; otherwise the line would move as Paseo mounts and unmounts history.
+    // The line belongs to one row of the turn, and keeps that row while it stays mounted: Paseo
+    // mounts an earlier row of the same turn as history scrolls in, and re-electing the first row
+    // would make the line jump, revealing one and hiding the other. An open line pins its row too.
     const rows = turn.filter((found): found is DomElement => !("text" in found));
     const open = rows.find((member) => member.getAttribute(OPEN_ATTRIBUTE) === "true");
-    const leader = open ?? (start === "unmounted" ? undefined : rows[0]);
+    let leader = open;
+    if (!leader && start !== "unmounted") {
+      const pinned = boundary ? leadersByUser.get(boundary) : leaderAtTop;
+      leader = pinned && rows.includes(pinned) ? pinned : rows[0];
+    }
+    if (leader) {
+      if (boundary) leadersByUser.set(boundary, leader);
+      else leaderAtTop = leader;
+    }
     const leads = leader === row;
     if (!leads) return onChange({ leads, steps: [], partial: false });
 
@@ -429,7 +475,14 @@ export function watchLayout(node: unknown, watcher: () => void): () => void {
 export function installStyles(): () => void {
   if (!isWeb) return () => {};
   const style = document.createElement("style");
-  style.textContent = `:has(> * > [data-testid="${ITEM_ROW_TEST_ID}"]) { margin-bottom: 0 !important; }`;
+  style.textContent = `
+    :has(> * > [data-testid="${ITEM_ROW_TEST_ID}"]) { margin-bottom: 0 !important; }
+    [id^="zigzag-part-"]:hover {
+      text-decoration: underline;
+      text-underline-offset: 2px;
+      cursor: pointer;
+    }
+  `;
   document.head.appendChild(style);
   const folds = document.createElement("style");
   document.head.appendChild(folds);
@@ -449,12 +502,43 @@ export function installStyles(): () => void {
   };
 }
 
-/** Calls `onOutside` when a press starts outside `node`. Web only; returns the unsubscribe. */
-export function onPressOutside(node: unknown, onOutside: () => void): () => void {
+/** A small preference string kept on this client. Empty off the web. */
+export function readSetting(key: string): string | null {
+  if (!isWeb) return null;
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+/** Lifts the plugin's chat row above later rows while a dropdown is open. Web only. */
+export function raisePluginRow(node: unknown, raised: boolean): void {
+  if (!isWeb || !node) return;
+  const row = (node as DomElement).closest(`[${ROW_ID}]`) as
+    | (DomElement & { style: { position: string; zIndex: string } })
+    | null;
+  if (!row) return;
+  row.style.position = raised ? "relative" : "";
+  row.style.zIndex = raised ? "9999" : "";
+}
+
+export function writeSetting(key: string, value: string): void {
+  if (!isWeb) return;
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    // Storage can be unavailable; preferences then last for the session only.
+  }
+}
+
+/** Calls `onOutside` when a press starts outside `node` and `ignore`. Web only; returns the unsubscribe. */
+export function onPressOutside(node: unknown, onOutside: () => void, ignore?: unknown[]): () => void {
   if (!isWeb || !node) return () => {};
   const element = node as DomElement;
+  const ignored = (ignore ?? []).filter(Boolean) as DomElement[];
   const listener: PointerListener = (event) => {
-    if (!element.contains(event.target)) onOutside();
+    if (!element.contains(event.target) && !ignored.some((item) => item.contains(event.target))) onOutside();
   };
   document.addEventListener("pointerdown", listener, true);
   return () => document.removeEventListener("pointerdown", listener, true);
@@ -491,6 +575,32 @@ function followOnNextOutput(scroller: DomElement, top: number) {
   observer.observe(content);
 }
 
+// The chat's content while a line is open. Paseo scrolls to the bottom on growth whenever it is
+// following, and a chat that cannot scroll up yet never stops following, so the nudge alone
+// misses it. Paseo's scroll runs in the next frame; this puts the position back after it.
+let guard: { scroller: DomElement; observer: ResizeObserver } | null = null;
+
+function holdPosition(scroller: DomElement) {
+  if (guard?.scroller === scroller) return;
+  guard?.observer.disconnect();
+  guard = null;
+  const content = scroller.firstElementChild;
+  if (!content) return;
+  const observer = new ResizeObserver(() => {
+    const top = scroller.scrollTop;
+    requestAnimationFrame(() => {
+      if (Math.abs(scroller.scrollTop - top) > 0.5) scroller.scrollTop = top;
+    });
+  });
+  observer.observe(content);
+  guard = { scroller, observer };
+}
+
+function releasePosition() {
+  guard?.observer.disconnect();
+  guard = null;
+}
+
 /**
  * Keeps the chat from following new output while any line is open, if it was following. The
  * returned release takes the collapse duration: once the last line has finished closing, the
@@ -516,23 +626,39 @@ export function holdChatScroll(node: unknown): (closeMs: number) => void {
     scroller.scrollTop -= NUDGE_PX;
     paused = { scroller, top: scroller.scrollTop };
   }
+  if (scroller) holdPosition(scroller);
 
   let released = false;
   return (closeMs) => {
     if (released) return;
     released = true;
     holds -= 1;
-    if (holds > 0 || !paused) return;
+    if (holds > 0) return;
+    if (!paused) return releasePosition();
     const { scroller: pausedScroller, top } = paused;
     if (Math.abs(pausedScroller.scrollTop - top) > NUDGE_PX) {
       paused = null;
-      return;
+      return releasePosition();
     }
     resumeTimer = setTimeout(() => {
       resumeTimer = null;
       paused = null;
+      releasePosition();
       // Collapsing can clamp the view to the new bottom, which moves it without the reader.
       followOnNextOutput(pausedScroller, pausedScroller.scrollTop);
     }, closeMs);
   };
+}
+
+/** Calls `handler` with each key pressed while the window has focus. Web only; returns the cleanup. */
+export function onKeys(handler: (key: string) => void): () => void {
+  if (!isWeb) return () => {};
+  const listener = (event: { key: string; preventDefault(): void }) => {
+    if (["ArrowLeft", "ArrowRight", "Escape"].includes(event.key)) {
+      event.preventDefault();
+      handler(event.key);
+    }
+  };
+  window.addEventListener("keydown", listener);
+  return () => window.removeEventListener("keydown", listener);
 }

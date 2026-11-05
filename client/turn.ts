@@ -32,7 +32,7 @@ function isAnchor({ item }: Entry, anchor: ItemData) {
     : item.type === "reasoning" && item.text === anchor.body;
 }
 
-function toStep({ item }: Entry, shown: boolean): Step<ItemData> | null {
+function toStep({ item, timestamp }: Entry, shown: boolean): Step<ItemData> | null {
   if (item.type === "assistant_message") return item.text.trim() ? { prose: item.text, shown } : null;
   const data =
     item.type === "reasoning"
@@ -40,7 +40,7 @@ function toStep({ item }: Entry, shown: boolean): Step<ItemData> | null {
       : item.type === "tool_call"
         ? toolData(item as ToolCall, "complete")
         : null;
-  return data ? { item: data } : null;
+  return data ? { item: { ...data, at: Date.parse(timestamp) } } : null;
 }
 
 /**
@@ -183,11 +183,15 @@ export function useAgentTimeline(paseo: Paseo, agentId: string, enabled: boolean
  * What this plugin shows for a timeline entry: its item; "hidden" for one it shows nothing for (an
  * empty thought or message); null for one Paseo draws itself, which ends a stretch of items.
  */
-function itemOf({ item }: Entry): ItemData | "hidden" | null {
-  if (item.type === "reasoning") return thoughtData(item.text, "complete") ?? "hidden";
+function itemOf({ item, timestamp }: Entry): ItemData | "hidden" | null {
+  if (item.type === "reasoning") {
+    const data = thoughtData(item.text, "complete");
+    return data ? { ...data, at: Date.parse(timestamp) } : "hidden";
+  }
   if (item.type === "tool_call") {
     const call = item as ToolCall;
-    return toolData(call, call.status === "running" ? "streaming" : "complete");
+    const data = toolData(call, call.status === "running" ? "streaming" : "complete");
+    return data ? { ...data, at: Date.parse(timestamp) } : null;
   }
   if (item.type === "assistant_message" && !item.text.trim()) return "hidden";
   return null;

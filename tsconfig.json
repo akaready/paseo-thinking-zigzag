@@ -4,10 +4,12 @@
     "module": "ESNext",
     "moduleResolution": "Bundler",
     "lib": [
-      "ES2023"
+      "ES2023",
+      "DOM"
     ],
     "types": [
-      "react"
+      "react",
+      "node"
     ],
     "jsx": "react-jsx",
     "strict": true,

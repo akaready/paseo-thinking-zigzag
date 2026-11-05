@@ -4,5 +4,9 @@
   "description": "Folds each agent turn's thinking, tool calls and interim messages into one expandable summary line",
   "requirements": {
     "paseo": ">=0.11.2"
-  }
+  },
+  "media": [
+    "media/turn-open.png",
+    "media/turn-closed.png"
+  ]
 }

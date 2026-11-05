@@ -17,7 +17,7 @@ export default function contribute(client: PluginClientContext) {
   });
   client.addTimelineRenderer({
     kind: ITEM_KIND,
-    version: 1,
+    version: 2,
     schema: itemSchema,
     Component: ItemRow,
   });
