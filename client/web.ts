@@ -469,14 +469,15 @@ export function watchLayout(node: unknown, watcher: () => void): () => void {
 /**
  * Removes the gap Paseo leaves below every timeline row from item rows, so a turn takes only the
  * space its line needs. A stylesheet rule, because Paseo adds the gap again whenever a row gets
- * a new neighbor. The gap is a margin on Paseo's row wrapper, two levels above the plugin's view.
+ * a new neighbor. The gap sits on Paseo's row wrapper, two levels above the plugin's view: a margin
+ * in the chat, and padding inside a turn Paseo folds under "View turn details".
  * Also adds the stylesheet that folds messages. Web only; returns the cleanup.
  */
 export function installStyles(): () => void {
   if (!isWeb) return () => {};
   const style = document.createElement("style");
   style.textContent = `
-    :has(> * > [data-testid="${ITEM_ROW_TEST_ID}"]) { margin-bottom: 0 !important; }
+    :has(> * > [data-testid="${ITEM_ROW_TEST_ID}"]) { margin-bottom: 0 !important; padding-bottom: 0 !important; }
     [id^="zigzag-part-"]:hover {
       text-decoration: underline;
       text-underline-offset: 2px;
