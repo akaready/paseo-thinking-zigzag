@@ -10,7 +10,9 @@ When the agent took screenshots, the line counts them too. Click that count to o
 
 While a turn is open on desktop or web, the chat stops following new output, so the view stays put while the agent keeps working. Closing it follows the latest output again, unless you scrolled away in the meantime.
 
-Opening a chat reads the agent's timeline once from your Paseo host, so earlier messages fold before they are shown rather than appearing and then collapsing as you scroll. A turn that starts above what the chat has loaded is read from the timeline too, so its counts and sections stay complete.
+A turn is whatever Paseo counts as one, not just what follows your message. When a background task or subagent finishes and the agent starts working again on its own, that is a new turn with its own line, and the reply that ended the turn before it stays in the chat. A reply only folds when a later message arrives in the same turn.
+
+While a chat is open, the plugin reads the agent's timeline from your Paseo host and follows its live events. That is how it knows where each turn ends, and it lets earlier messages fold before they are shown rather than appearing and then collapsing as you scroll. A turn that starts above what the chat has loaded is read from the timeline too, so its counts and sections stay complete.
 
 Plan approvals and spoken messages keep Paseo's own rendering. Tool output is trimmed to its last 40 lines for commands and logs, and its first 40 for everything else. Messages in an opened turn show as plain text.
 

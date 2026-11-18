@@ -33,7 +33,8 @@ Update it later with `paseo plugin update thinking-zigzag`. Requires Paseo 0.11.
 ## ✨ What It Does
 
 - **One line per turn.** A zig-zag from both edges meets a summary in the middle, such as `10 messages · 25 thoughts · 28 commands · 3 edits · 1 failed`. It sits just above the agent's latest reply, with even spacing above and below.
-- **Folds the in-between.** Thinking, tool calls, and every message before the agent's latest one fold into the line. Only the latest reply stays in the chat.
+- **Folds the in-between.** Thinking, tool calls, and every message before the turn's latest one fold into the line. Only the turn's latest reply stays in the chat.
+- **Keeps finished replies.** When a background task or subagent finishes and the agent starts a new turn on its own, that turn gets its own line and the reply before it stays put.
 - **Opens in place.** Click the line and the turn slides open below it. It starts as a table of contents: one section per stretch of work, titled with the sentence the agent used to announce it, with its own counts. Open a section to read the agent's message in full, followed by its thoughts and tool calls; open a tool call to see its output, diff, or log.
 - **Holds the view.** While a turn is open, the chat stops following new output so the view stays put while the agent keeps working, and follows again when you close it. Click anywhere outside the open turn to close it.
 - **Jumps to the work.** Click a count in the line, such as `3 edits`, to open the turn at those steps. Switch between the timeline and a view grouped by type, show step durations, and pick a colour for each type of step.
@@ -45,7 +46,7 @@ Update it later with `paseo plugin update thinking-zigzag`. Requires Paseo 0.11.
 ## 📝 Notes
 
 - If another plugin hides Thinking rows, such as Mono's "Hide Thinking in timeline" setting, turn that off, or thoughts are left out.
-- Opening a chat reads the agent's timeline once from your Paseo host, so earlier messages fold before they appear.
+- While a chat is open, the plugin reads the agent's timeline from your Paseo host and follows its live events, to know where each turn ends and to fold earlier messages before they appear.
 - Folding, the one-line summary per turn, and closing by clicking outside work on desktop and the web app, including Safari on iPad. In Paseo's phone and tablet apps, messages stay in the chat, so each stretch of work between them gets its own line, and Paseo still leaves a small gap for every thought and tool call in it.
 - Plan approvals and spoken messages keep Paseo's own rendering. Tool output is trimmed to 40 lines, and messages in an opened turn show as plain text.
 - It works by reading and restyling Paseo's web chat, so a later Paseo release could change how it behaves.

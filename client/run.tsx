@@ -13,7 +13,7 @@ import {
 import { useQuery } from "@tanstack/react-query";
 import { Animated, Easing, Platform, Pressable, Text, View } from "react-native";
 import type { ItemData } from "./items";
-import { fetchSupersededMessages, fetchTurn, stretchOf, useAgentTimeline } from "./turn";
+import { fetchTurn, itemKey, stretchOf, turnsOf, useAgentTimeline } from "./turn";
 import {
   Panel,
   summaryPartColor,
@@ -25,7 +25,6 @@ import {
 } from "./panel";
 import {
   ITEM_ROW_TEST_ID,
-  foldMessages,
   holdChatScroll,
   markRunOpen,
   measureClearance,
@@ -132,32 +131,31 @@ export function ItemRow({ agentId, item, timestamp, theme, layout }: PluginTimel
   const runKey = useRef("");
   const dataKey = JSON.stringify(item.data);
   const at = timestamp.getTime();
-  // Messages that later ones supersede fold before Paseo shows them, so scrolling through history
-  // does not show each one and then collapse it. Read once per agent.
+  // The agent's timeline says where its turns end, and which messages later ones supersede.
+  // Those fold before Paseo shows them, so scrolling through history does not show each one and
+  // then collapse it. Off the web it also stands in for the page a row cannot see.
   const paseo = usePaseo();
-  const superseded = useQuery({
-    queryKey: ["thinking-zigzag", "superseded", agentId],
-    queryFn: () => fetchSupersededMessages(paseo, agentId),
-    enabled: !NATIVE,
-    staleTime: Infinity,
-  });
-  const timeline = useAgentTimeline(paseo, agentId, NATIVE);
+  const timeline = useAgentTimeline(paseo, agentId);
   const mountedAt = useRef(Date.now());
-  useEffect(() => {
-    if (superseded.data) foldMessages(superseded.data);
-  }, [superseded.data]);
 
   // dataKey stands in for item.data, which is a fresh object on every render.
-  useEffect(() => publishItem(rowRef.current, { ...item.data, at }), [dataKey, at]);
+  useEffect(
+    () => publishItem(rowRef.current, itemKey(item.data), { ...item.data, at }),
+    [dataKey, at],
+  );
   useEffect(
     () =>
-      trackRun<ItemData>(rowRef.current, (next) => {
-        const key = JSON.stringify(next);
-        if (key === runKey.current) return;
-        runKey.current = key;
-        setRun(next);
-      }),
-    [],
+      trackRun<ItemData>(
+        rowRef.current,
+        () => turnsOf(agentId),
+        (next) => {
+          const key = JSON.stringify(next);
+          if (key === runKey.current) return;
+          runKey.current = key;
+          setRun(next);
+        },
+      ),
+    [agentId],
   );
 
   const steps = NATIVE

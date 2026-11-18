@@ -76,7 +76,7 @@ export const ITEM_ROW_TEST_ID = "thinking-zigzag-item";
 
 // Each item is its own timeline row, and a row cannot see its neighbors. So every row
 // publishes its data here, and the row that draws a turn's line gathers the rest from the page.
-const published = new Map<DomElement, unknown>();
+const published = new Map<DomElement, { key: string; data: unknown }>();
 const listeners = new Set<() => void>();
 let frame = 0;
 
@@ -88,11 +88,14 @@ function changed() {
   });
 }
 
-/** Shares this row's data with the row that draws its turn. Web only; returns the cleanup. */
-export function publishItem(node: unknown, data: unknown): () => void {
+/**
+ * Shares this row's data with the row that draws its turn, under the key the agent's timeline
+ * has for the item. Web only; returns the cleanup.
+ */
+export function publishItem(node: unknown, key: string, data: unknown): () => void {
   if (!isWeb || !node) return () => {};
   const row = node as DomElement;
-  published.set(row, data);
+  published.set(row, { key, data });
   changed();
   return () => {
     published.delete(row);
@@ -112,6 +115,7 @@ function isItemRow(element: DomElement) {
 
 /** One block of an agent message, which Paseo renders as its own row. */
 interface Prose {
+  element: DomElement;
   text: string;
   messageId: string | null;
   rowId: string | null;
@@ -135,7 +139,7 @@ function readProse(element: DomElement): Prose {
     (rowId && foldedText.get(rowId)) ||
     timelineText(messageId, rowId) ||
     (element.innerText ?? "").trim();
-  return { text, messageId, rowId };
+  return { element, text, messageId, rowId };
 }
 
 // Visits the item rows, user messages, and agent messages in `element`, in reading order or in
@@ -227,10 +231,14 @@ const supersededText = new Map<string, string>();
 // Paseo names a message's rows after the message: its ID, `<ID>:segment:<n>` for later
 // segments, or `assistant_<created>_<hash>_<n>` without an ID; and splits one into rows
 // `<row>:block:<n>`, of which the first carries the whole message here.
+function messageKey(messageId: string) {
+  const created = /^assistant_(\d+)_/.exec(messageId)?.[1];
+  return created ? `created:${created}` : messageId.split(":segment:")[0]!;
+}
+
 function timelineText(messageId: string | null, rowId: string | null) {
   if (!messageId || /:block:[1-9]\d*$/.test(rowId ?? "")) return undefined;
-  const created = /^assistant_(\d+)_/.exec(messageId)?.[1];
-  return supersededText.get(created ? `created:${created}` : messageId.split(":segment:")[0]!);
+  return supersededText.get(messageKey(messageId));
 }
 
 /** Folds messages read from the timeline, before Paseo mounts their rows. Web only. */
@@ -268,12 +276,31 @@ export function markRunOpen(node: unknown, open: boolean) {
  */
 export type Step<T> = { prose: string; shown: boolean } | { item: T };
 
-// The row that draws a turn's line, keyed by the user message that starts the turn. A turn above
-// the first user message has no key, so its leader is kept separately.
-const leadersByUser = new WeakMap<DomElement, DomElement>();
+// The row that draws a turn's line, keyed by what sits before the turn: a user message, or the
+// row that ended the turn before it. A turn at the top of the chat has no key, so its leader is
+// kept separately.
+const leaders = new WeakMap<DomElement, DomElement>();
 let leaderAtTop: DomElement | null = null;
 
-/** One turn: everything between two of the user's messages. */
+/**
+ * What the agent's timeline says about its turns, which the page does not show: an agent starts
+ * turns on its own, when a background task or subagent finishes, with no user message between
+ * them. Rows and messages go by their timeline keys: a tool call's ID, `thought:<text>`, a
+ * message's ID, or `created:<ms>` for a message without one.
+ */
+export interface TurnMarks {
+  /** The last row of each turn that has ended. */
+  ends: Set<string>;
+  /** The turn of each agent message that has an ID. */
+  messageTurn: Map<string, string>;
+}
+
+/** Measures every turn again, after the timeline has said something new about them. Web only. */
+export function turnsChanged() {
+  if (isWeb) changed();
+}
+
+/** One turn: what the agent did between two of the user's messages, up to where it ended. */
 export interface Run<T> {
   /** Whether this row draws the turn's line. */
   leads: boolean;
@@ -284,12 +311,17 @@ export interface Run<T> {
 }
 
 /**
- * Reports this row's turn now and whenever any row publishes. The turn's first row draws its
- * line, which keeps it in one place as the turn grows, and folds the turn's earlier messages.
+ * Reports this row's turn now, whenever any row publishes, and whenever the timeline says more
+ * about turns. The turn's first row draws its line, which keeps it in one place as the turn
+ * grows, and folds the turn's earlier messages.
  * An open line stays with its row. Reports null off the web, where each row is its own run.
  * Returns the cleanup.
  */
-export function trackRun<T>(node: unknown, onChange: (run: Run<T> | null) => void) {
+export function trackRun<T>(
+  node: unknown,
+  turns: () => TurnMarks | null,
+  onChange: (run: Run<T> | null) => void,
+) {
   const row = isWeb && node ? (node as DomElement) : null;
   const scroller = row?.closest(CHAT_SCROLLER);
   if (!row || !scroller) {
@@ -297,12 +329,13 @@ export function trackRun<T>(node: unknown, onChange: (run: Run<T> | null) => voi
     return () => {};
   }
   const measure = () => {
+    const marks = turns();
     const before: NonUser[] = [];
     const after: NonUser[] = [];
-    let boundary: DomElement | null = null;
+    let user: DomElement | null = null;
     const collectBefore = (next: Found) => {
       if ("user" in next) {
-        boundary = next.user;
+        user = next.user;
         return false;
       }
       before.push(next);
@@ -313,16 +346,47 @@ export function trackRun<T>(node: unknown, onChange: (run: Run<T> | null) => voi
       after.push(next);
       return true;
     };
-    const start = walk(row, scroller, false, collectBefore);
+    const reached = walk(row, scroller, false, collectBefore);
     walk(row, scroller, true, collectAfter);
-    const turn = [...before.reverse(), row, ...after];
+    const at = before.length;
+    const span = [...before.reverse(), row, ...after];
 
-    // Every message before the last one this row can see has a later one, so it folds. The last
-    // one may be the turn's latest, so it stays until a later message is mounted. Messages that
-    // are only an image have no text, and fold all the same.
+    // The span between two user messages holds every turn the agent started on its own there.
+    // This row's turn runs from the row after the previous turn's last one to its own last one.
+    // A message split into several rows shares one key, so the last of them is the turn's end.
+    const keys = span.map((found) =>
+      "text" in found
+        ? found.messageId && messageKey(found.messageId)
+        : published.get(found)?.key,
+    );
+    const endsTurn = (index: number) => {
+      const key = keys[index];
+      return !!key && !!marks?.ends.has(key) && keys.lastIndexOf(key) === index;
+    };
+    let first = at;
+    while (first > 0 && !endsTurn(first - 1)) first -= 1;
+    let last = at;
+    while (last < span.length - 1 && !endsTurn(last)) last += 1;
+    const turn = span.slice(first, last + 1);
+    const previous = first > 0 ? span[first - 1]! : null;
+    const boundary = previous ? ("text" in previous ? previous.element : previous) : user;
+    const start = previous ? "stopped" : reached;
+
+    // A message folds once a later one is known to be in its turn. Until the timeline has said
+    // so it stays, because hiding a finished reply is far worse than showing an earlier message.
+    // Messages that are only an image have no text, and fold all the same.
+    // One message can be several rows, when something else landed in the middle of it. Its rows
+    // share a key and stay together: a reply's first half is not an earlier message.
     const prose = turn.filter((found): found is Prose => "text" in found);
-    const latest = prose[prose.length - 1]?.messageId ?? null;
-    const earlier = prose.filter((block) => block.messageId && block.messageId !== latest);
+    const keyOf = (block: Prose | undefined) => (block?.messageId ? messageKey(block.messageId) : null);
+    const latest = keyOf(prose[prose.length - 1]);
+    const latestTurn = latest ? marks?.messageTurn.get(latest) : undefined;
+    const earlier = prose.filter((block) => {
+      const key = keyOf(block);
+      return (
+        !!key && key !== latest && latestTurn !== undefined && marks?.messageTurn.get(key) === latestTurn
+      );
+    });
     for (const block of earlier) if (block.rowId && block.text) foldedText.set(block.rowId, block.text);
     fold(earlier.map((block) => block.messageId!));
 
@@ -333,11 +397,11 @@ export function trackRun<T>(node: unknown, onChange: (run: Run<T> | null) => voi
     const open = rows.find((member) => member.getAttribute(OPEN_ATTRIBUTE) === "true");
     let leader = open;
     if (!leader && start !== "unmounted") {
-      const pinned = boundary ? leadersByUser.get(boundary) : leaderAtTop;
+      const pinned = boundary ? leaders.get(boundary) : leaderAtTop;
       leader = pinned && rows.includes(pinned) ? pinned : rows[0];
     }
     if (leader) {
-      if (boundary) leadersByUser.set(boundary, leader);
+      if (boundary) leaders.set(boundary, leader);
       else leaderAtTop = leader;
     }
     const leads = leader === row;
@@ -345,9 +409,10 @@ export function trackRun<T>(node: unknown, onChange: (run: Run<T> | null) => voi
 
     const steps = turn.flatMap((found): Step<T>[] => {
       if (!("text" in found)) {
-        return published.has(found) ? [{ item: published.get(found) as T }] : [];
+        const item = published.get(found);
+        return item ? [{ item: item.data as T }] : [];
       }
-      return found.text ? [{ prose: found.text, shown: found.messageId === latest }] : [];
+      return found.text ? [{ prose: found.text, shown: keyOf(found) === latest }] : [];
     });
     onChange({ leads, steps, partial: start !== "stopped" });
   };

@@ -1,7 +1,7 @@
 import type { usePaseo } from "@getpaseo/plugin/client";
 import { useEffect, useState } from "react";
 import { thoughtData, toolData, type ItemData, type ToolCall } from "./items";
-import type { FoldKey, Step } from "./web";
+import { foldMessages, turnsChanged, type FoldKey, type Step, type TurnMarks } from "./web";
 
 type Paseo = ReturnType<typeof usePaseo>;
 type Timeline = ReturnType<Paseo["agents"]["ref"]>["timeline"];
@@ -10,9 +10,16 @@ type Entry = Page["entries"][number];
 
 const PAGE_SIZE = 200;
 
+/** The turn the agent is working in when a page is read: null when idle, undefined when the host does not say. */
+function activeTurnOf(page: Page) {
+  const active = page.agent?.activeTurn;
+  return active ? active.turnId : active;
+}
+
 /** The agent's whole timeline, read back page by page from its newest entry. */
 async function fetchAll(timeline: Timeline) {
   let page = await timeline.refetch({ direction: "tail", limit: PAGE_SIZE, projection: "projected" });
+  const active = activeTurnOf(page);
   let entries = page.entries;
   while (page.hasOlder && page.startCursor) {
     page = await timeline.refetch({
@@ -23,7 +30,39 @@ async function fetchAll(timeline: Timeline) {
     });
     entries = [...page.entries, ...entries];
   }
-  return entries;
+  return { entries, active };
+}
+
+/** Whether an entry sets the agent to work: a message from a user or another agent, a heartbeat, or word that a background task finished. */
+function startsWork(item: Entry["item"]) {
+  if (item.type === "user_message") return true;
+  if (item.type !== "tool_call") return false;
+  const call = item as ToolCall & { agentMessage?: unknown };
+  return (
+    call.agentMessage !== undefined || call.name === "heartbeat" || call.name === "task_notification"
+  );
+}
+
+/**
+ * For each entry, whether it starts a turn. A user message always does in the chat, and so does
+ * the entry after it. The agent also starts turns on its own, when a background task or subagent
+ * finishes, which only the turn ID shows. Paseo leaves some entries out of every turn, such as the
+ * word that a background task finished: one that sets the agent to work goes with the turn after
+ * it, any other with the turn before it, so that no such entry joins two turns into one. Entries
+ * from a host that sends no turn IDs run until the next one that sets the agent to work.
+ */
+function turnStarts(entries: Entry[]) {
+  const turns = entries.map((entry) => entry.turnId);
+  for (let index = 1; index < turns.length; index += 1) {
+    if (turns[index] === undefined && !startsWork(entries[index]!.item)) turns[index] = turns[index - 1];
+  }
+  for (let index = turns.length - 2; index >= 0; index -= 1) turns[index] ??= turns[index + 1];
+  return entries.map((entry, index) => {
+    const before = entries[index - 1];
+    if (!before || entry.item.type === "user_message" || before.item.type === "user_message") return true;
+    const [turn, turnBefore] = [turns[index], turns[index - 1]];
+    return turn !== undefined && turnBefore !== undefined ? turn !== turnBefore : startsWork(entry.item);
+  });
 }
 
 function isAnchor({ item }: Entry, anchor: ItemData) {
@@ -54,11 +93,12 @@ export async function fetchTurn(paseo: Paseo, agentId: string, anchor: ItemData)
   for (;;) {
     const at = entries.findLastIndex((entry) => isAnchor(entry, anchor));
     if (at >= 0) {
+      const starts = turnStarts(entries);
       let start = at;
-      while (start > 0 && entries[start - 1]!.item.type !== "user_message") start -= 1;
+      while (!starts[start]) start -= 1;
       if (start > 0 || !page.hasOlder) {
         let end = at;
-        while (end + 1 < entries.length && entries[end + 1]!.item.type !== "user_message") end += 1;
+        while (end + 1 < entries.length && !starts[end + 1]) end += 1;
         const turn = entries.slice(start, end + 1);
         const latest = turn.findLastIndex(
           ({ item }) => item.type === "assistant_message" && !!item.text.trim(),
@@ -77,36 +117,75 @@ export async function fetchTurn(paseo: Paseo, agentId: string, anchor: ItemData)
   }
 }
 
-/**
- * Every agent message that a later message in its turn supersedes, read from the agent's whole
- * timeline, so the chat can fold those messages before it shows them.
- */
-export async function fetchSupersededMessages(paseo: Paseo, agentId: string) {
-  const entries = await fetchAll(paseo.agents.ref(agentId).timeline);
-  const superseded: FoldKey[] = [];
-  let messages: Entry[] = [];
-  const endTurn = () => {
-    for (const { item, timestamp } of messages.slice(0, -1)) {
-      if (item.type !== "assistant_message") continue;
-      const text = item.text.trim();
-      superseded.push(
-        item.messageId
-          ? { messageId: item.messageId, text }
-          : { createdAt: Date.parse(timestamp), text },
-      );
-    }
-    messages = [];
-  };
-  for (const entry of entries) {
-    if (entry.item.type === "user_message") endTurn();
-    else if (entry.item.type === "assistant_message") messages.push(entry);
-  }
-  endTurn();
-  return superseded;
+/** A row's item as the timeline names it: a tool call by its ID, a thought by its text. */
+export function itemKey(data: ItemData) {
+  return data.kind === "tool" ? data.callId : `thought:${data.body.trim()}`;
 }
 
-// Off the web a row cannot see the page around it, so it reads its neighbors from the agent's
-// timeline: loaded once per agent, shared by its rows, and kept current from live events.
+/** The key of the chat row that shows an entry; null for an entry this plugin does not look for. */
+function entryKey(entry: Entry) {
+  const { item, timestamp } = entry;
+  if (item.type === "assistant_message") {
+    return item.text.trim() ? (item.messageId ?? `created:${Date.parse(timestamp)}`) : null;
+  }
+  const shown = itemOf(entry);
+  return shown && shown !== "hidden" ? itemKey(shown) : null;
+}
+
+/**
+ * What the timeline says about its turns: the last row of each one that has ended, and every agent
+ * message that a later message in its own turn supersedes, so the chat can fold those before it
+ * shows them. Also notes each message's turn in `messageTurn`. The latest turn has ended when it
+ * is not `active`, the turn the agent is working in.
+ */
+function turnsIn(
+  entries: Entry[],
+  active: string | null | undefined,
+  messageTurn: Map<string, string>,
+) {
+  const ends = new Set<string>();
+  const superseded: FoldKey[] = [];
+  // The turn's messages, and which of them is the latest. Paseo stores one message as several
+  // entries when something else lands in the middle of it, so entries with one key are one
+  // message: its parts stay together, and none of them supersedes another.
+  let messages: (FoldKey & { key: string })[] = [];
+  let latestMessage: string | null = null;
+  let last: string | null = null;
+  const closeTurn = (ended: boolean) => {
+    if (ended && last) ends.add(last);
+    for (const { key, ...message } of messages) {
+      if (key !== latestMessage) superseded.push({ ...message, text: message.text.trim() });
+    }
+    messages = [];
+    latestMessage = null;
+    last = null;
+  };
+  const starts = turnStarts(entries);
+  entries.forEach((entry, index) => {
+    if (index > 0 && starts[index]) closeTurn(true);
+    const { item, timestamp } = entry;
+    const key = entryKey(entry);
+    // A message with no text has no row, so it supersedes nothing.
+    if (item.type === "assistant_message" && key) {
+      const earlier = messages.find((message) => message.key === key);
+      if (earlier) earlier.text += item.text;
+      else {
+        const id = item.messageId ? { messageId: item.messageId } : { createdAt: Date.parse(timestamp) };
+        messages.push({ key, text: item.text, ...id });
+      }
+      latestMessage = key;
+      if (item.messageId && entry.turnId) messageTurn.set(item.messageId, entry.turnId);
+    }
+    last = key ?? last;
+  });
+  const latest = entries[entries.length - 1]?.turnId;
+  closeTurn(active !== undefined && latest !== undefined && latest !== active);
+  return { ends, superseded };
+}
+
+// A row cannot see the agent's turns, and off the web it cannot see the page around it either, so
+// both come from the agent's timeline: loaded once per agent, shared by its rows, and kept current
+// from live events.
 const SETTLE_MS = 250;
 const IDLE_MS = 30_000;
 
@@ -114,6 +193,7 @@ interface Watched {
   entries: Entry[];
   /** When the timeline was last read; 0 until the first read. */
   readAt: number;
+  turns: TurnMarks;
   rows: Set<() => void>;
   idle: ReturnType<typeof setTimeout> | null;
   stop: () => void;
@@ -125,32 +205,68 @@ function watch(paseo: Paseo, agentId: string): Watched {
   const existing = watched.get(agentId);
   if (existing) return existing;
   const timeline = paseo.agents.ref(agentId).timeline;
-  const state: Watched = { entries: [], readAt: 0, rows: new Set(), idle: null, stop: () => {} };
+  const state: Watched = {
+    entries: [],
+    readAt: 0,
+    turns: { ends: new Set(), messageTurn: new Map() },
+    rows: new Set(),
+    idle: null,
+    stop: () => {},
+  };
   watched.set(agentId, state);
-  const read = (entries: Entry[]) => {
+  // Every turn seen so far, so a new one is noticed as it starts.
+  const turnsSeen = new Set<string>();
+  const read = (entries: Entry[], active: string | null | undefined) => {
     state.entries = entries;
     state.readAt = Date.now();
+    for (const { turnId } of entries) if (turnId) turnsSeen.add(turnId);
+    const { ends, superseded } = turnsIn(entries, active, state.turns.messageTurn);
+    state.turns.ends = ends;
+    foldMessages(superseded);
+    turnsChanged();
     state.rows.forEach((row) => row());
   };
-  const readAll = () => fetchAll(timeline).then(read, () => {});
+  const readAll = () =>
+    fetchAll(timeline).then(
+      ({ entries, active }) => read(entries, active),
+      () => {},
+    );
   // The newest page replaces what it overlaps; a gap wider than a page reads the whole timeline.
   const readTail = async () => {
     const page = await timeline.refetch({ direction: "tail", limit: PAGE_SIZE, projection: "projected" });
     const first = page.entries[0]?.seqStart;
     const last = state.entries[state.entries.length - 1]?.seqEnd;
-    if (first === undefined) return read(page.entries);
+    if (first === undefined) return read(page.entries, activeTurnOf(page));
     if (page.hasOlder && last !== undefined && first > last + 1) return readAll();
-    read([...state.entries.filter((entry) => entry.seqStart < first), ...page.entries]);
+    read(
+      [...state.entries.filter((entry) => entry.seqStart < first), ...page.entries],
+      activeTurnOf(page),
+    );
   };
   let settle: ReturnType<typeof setTimeout> | null = null;
   const unsubscribe = timeline.subscribe((message) => {
-    const type = message.event.type;
-    if (type === "error") return;
-    if (type === "replacement" || type === "subscription_restored") return void readAll();
+    const event = message.event;
+    if (event.type === "error") return;
+    if (event.type === "replacement" || event.type === "subscription_restored") return void readAll();
     if (settle) clearTimeout(settle);
+    const turnId = event.type === "timeline" || event.type === "turn_started" ? event.turnId : undefined;
+    if (turnId !== undefined) {
+      // A message's turn is known as it starts, so the one before it in that turn folds at once.
+      if (event.type === "timeline" && event.item.type === "assistant_message" && event.item.messageId) {
+        state.turns.messageTurn.set(event.item.messageId, turnId);
+        turnsChanged();
+      }
+      // A new turn means the one before it has ended. Where it ended is read now, before the
+      // new turn's rows show.
+      if (!turnsSeen.has(turnId)) {
+        turnsSeen.add(turnId);
+        return void readTail().catch(() => {});
+      }
+    }
     settle = setTimeout(() => void readTail().catch(() => {}), SETTLE_MS);
   });
-  void readAll();
+  // The newest page covers what a chat shows when it opens, so it is read before the rest.
+  void readTail().then(readAll, readAll);
   state.stop = () => {
     if (settle) clearTimeout(settle);
     unsubscribe();
@@ -159,11 +275,15 @@ function watch(paseo: Paseo, agentId: string): Watched {
   return state;
 }
 
-/** The agent's timeline, re-rendering on every read. Off the web only: null when not `enabled`. */
-export function useAgentTimeline(paseo: Paseo, agentId: string, enabled: boolean) {
+/** What the agent's timeline says about its turns; null until a row of that agent is on screen. */
+export function turnsOf(agentId: string) {
+  return watched.get(agentId)?.turns ?? null;
+}
+
+/** The agent's timeline, re-rendering on every read. */
+export function useAgentTimeline(paseo: Paseo, agentId: string) {
   const [, setReads] = useState(0);
   useEffect(() => {
-    if (!enabled) return;
     const state = watch(paseo, agentId);
     if (state.idle) clearTimeout(state.idle);
     state.idle = null;
@@ -175,8 +295,8 @@ export function useAgentTimeline(paseo: Paseo, agentId: string, enabled: boolean
       // Rows unmount and mount again as the chat scrolls, so the timeline is kept a while.
       if (!state.rows.size) state.idle = setTimeout(state.stop, IDLE_MS);
     };
-  }, [paseo, agentId, enabled]);
-  return enabled ? (watched.get(agentId) ?? null) : null;
+  }, [paseo, agentId]);
+  return watched.get(agentId) ?? null;
 }
 
 /**
